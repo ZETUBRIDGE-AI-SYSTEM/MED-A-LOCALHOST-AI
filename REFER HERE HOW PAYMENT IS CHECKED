@@ -1,0 +1,886 @@
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useParams } from "wouter";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  LockKeyhole,
+  Maximize2,
+  ShieldCheck,
+  Volume2,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import PasswordPrompt from "@/components/PasswordPrompt";
+import {
+  getPublishedFlipbook,
+  requestFlipbookAccess,
+  verifyFlipbookPassword,
+} from "@/lib/supabase";
+
+type PdfPage = {
+  getViewport: (options: { scale: number }) => { width: number; height: number };
+  getOperatorList?: () => Promise<unknown>;
+  render: (options: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: { width: number; height: number };
+    transform: [number, number, number, number, number, number];
+  }) => { promise: Promise<void> };
+};
+
+type PdfDocument = {
+  numPages: number;
+  getPage: (page: number) => Promise<PdfPage>;
+};
+
+type PdfJs = {
+  getDocument: (options: Record<string, unknown>) => { promise: Promise<PdfDocument> };
+  GlobalWorkerOptions: { workerSrc: string };
+};
+
+type PanOffset = { x: number; y: number };
+
+const PDF_JS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs";
+const PDF_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+// Keep the page inset identical on every device. In particular, do not let
+// Samsung/browser safe-area calculations introduce an extra bottom gap.
+const STAGE_CLEARANCE = 6;
+const MAX_RENDER_ZOOM = 2.5;
+const MAX_RENDER_PIXELS = 16_000_000;
+
+async function loadPdfJs() {
+  return import(/* @vite-ignore */ PDF_JS_URL) as Promise<PdfJs>;
+}
+
+function deviceId() {
+  const key = "device_id";
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+  }
+  return id;
+}
+
+function AccessScreen({
+  checking,
+  error,
+  unavailable,
+  disabled,
+  onCheck,
+}: {
+  checking: boolean;
+  error: string;
+  unavailable: boolean;
+  disabled: boolean;
+  onCheck: () => void;
+}) {
+  if (checking) {
+    return (
+      <div className="heyzin-screen">
+        <div className="heyzin-loader">
+          <div className="heyzin-loader-mark"><FileText className="h-6 w-6" /></div>
+          <div className="heyzin-spinner" />
+          <p>Preparing your reading room</p>
+          <span>Checking your subscription securely.</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <main className="heyzin-screen heyzin-access-screen">
+      <div className="heyzin-access-glow heyzin-access-glow-one" />
+      <div className="heyzin-access-glow heyzin-access-glow-two" />
+      <section className="heyzin-access-card">
+        <div className="heyzin-access-brand">
+          <div className="heyzin-brand-lockup">
+            <span className="heyzin-brand-icon"><FileText className="h-5 w-5" /></span>
+           <span>MED-A <b>Reader</b></span>
+          </div>
+          <div className="heyzin-access-copy">
+             <span className="heyzin-eyebrow">Your study room</span>
+             <h1>Continue your MED-A study session.</h1>
+             <p>Your protected course material, presented clearly for focused learning.</p>
+          </div>
+          <span className="heyzin-secure-note"><ShieldCheck className="h-4 w-4" /> Powered By ZetuBridge</span>
+        </div>
+
+        <div className="heyzin-access-form">
+          <div className="heyzin-form-icon"><LockKeyhole className="h-6 w-6" /></div>
+           <span className="heyzin-eyebrow">Protected MED-A library</span>
+          <h2>{disabled ? "Account suspended" : "Unlock These Papers"}</h2>
+           <p>{disabled ? "This account has been disabled. Please contact support to restore access." : "Choose a plan from the Subscription button in the top-left menu, then return here."}</p>
+          {!disabled && (
+            <>
+              <div className="heyzin-steps">
+                 <span>Three quick steps</span>
+                <ol>
+                   <li><b>1</b><span>Tap <em>Subscription</em> in the top-left menu.</span></li>
+                   <li><b>2</b><span>Choose your plan and complete payment.</span></li>
+                   <li><b>3</b><span>Return here and tap <em>Check my subscription</em>.</span></li>
+                </ol>
+              </div>
+              {error && <p className="heyzin-error">{error}</p>}
+              {unavailable && !error && <p className="heyzin-warning">We could not reach the subscription service. Please try again.</p>}
+              <Button onClick={onCheck} className="heyzin-access-button">Check my subscription <ChevronRight className="h-4 w-4" /></Button>
+            </>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function BottomControl({
+  direction,
+  disabled,
+  onClick,
+}: {
+  direction: "previous" | "next";
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const previous = direction === "previous";
+  return (
+    <button
+      type="button"
+      aria-label={`${previous ? "Previous" : "Next"} page`}
+      title={`${previous ? "Previous" : "Next"} page`}
+      disabled={disabled}
+      onClick={onClick}
+      className={`heyzin-nav-button ${previous ? "heyzin-nav-prev" : "heyzin-nav-next"}`}
+    >
+      {previous ? <ChevronLeft className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+    </button>
+  );
+}
+
+ export default function StudentFlipbookViewer() {
+  const { id } = useParams<{ id: string }>();
+  const [book, setBook] = useState<any>(null);
+  const [pdf, setPdf] = useState<PdfDocument | null>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [mobile, setMobile] = useState(() => window.innerWidth < 768);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [access, setAccess] = useState(false);
+  const [passwordRequired, setPasswordRequired] = useState(false);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+  const [accessError, setAccessError] = useState("");
+  const [serviceUnavailable, setServiceUnavailable] = useState(false);
+  const [disabled, setDisabled] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [renderVersion, setRenderVersion] = useState(0);
+  const [pageRendering, setPageRendering] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<PanOffset>({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [turnDirection, setTurnDirection] = useState<"next" | "previous">("next");
+  const [turnKey, setTurnKey] = useState(0);
+  const pageCanvas = useRef<Record<number, HTMLCanvasElement | null>>({});
+  const pageCache = useRef(new Map<number, PdfPage>());
+  const pagePrefetches = useRef(new Map<number, Promise<PdfPage>>());
+  const panStart = useRef<(PanOffset & { clientX: number; clientY: number; pointerId: number }) | null>(null);
+  const activePointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinchStart = useRef<{ distance: number; zoom: number; pan: PanOffset } | null>(null);
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
+
+  const checkAccess = useCallback(async () => {
+    setCheckingAccess(true);
+    setAccessError("");
+    setServiceUnavailable(false);
+    setPasswordRequired(false);
+    const email = localStorage.getItem("user_email")?.trim().toLowerCase();
+    if (!email) {
+      setCheckingAccess(false);
+      setAccessError("No saved subscription email was found. Please choose a plan from the Subscription menu, then try again.");
+      return;
+    }
+    if (!id) {
+      setCheckingAccess(false);
+      setAccessError("This book could not be found.");
+      return;
+    }
+    const result = await requestFlipbookAccess(id, email, deviceId());
+    setCheckingAccess(false);
+    setServiceUnavailable(Boolean(result.unavailable));
+    if (result.disabled) {
+      setDisabled(true);
+      return;
+    }
+    if (!result.success) {
+      setAccessError(result.error || "No active subscription was found for this email and device.");
+      return;
+    }
+    setPasswordRequired(Boolean(result.passwordRequired));
+    setAccess(true);
+  }, [id]);
+
+  useEffect(() => {
+    void checkAccess();
+    const resize = () => setMobile(window.innerWidth < 768);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [checkAccess]);
+
+  const openPdf = useCallback(async () => {
+    if (!id) throw new Error("This book could not be found.");
+    const pdfjs = await loadPdfJs();
+    pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+    const keyResponse = await fetch(`/api/flipbooks/${encodeURIComponent(id)}/content/key`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!keyResponse.ok) {
+      const body = await keyResponse.json().catch(() => ({}));
+      throw new Error(body.message || "Unable to open this protected book.");
+    }
+    const task = pdfjs.getDocument({
+      url: `/api/flipbooks/${encodeURIComponent(id)}/content`,
+      password: (await keyResponse.json()).documentPassword,
+      withCredentials: true,
+      disableAutoFetch: false,
+      disableStream: false,
+    });
+    const document = await task.promise;
+    setPdf(document);
+    setPageCount(document.numPages);
+    setPage(1);
+  }, [id]);
+
+  useEffect(() => {
+    if (!access || !id) return;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    void (async () => {
+      try {
+      const metadataPromise = getPublishedFlipbook(id);
+      if (passwordRequired) {
+        const data = await metadataPromise;
+        if (!data) throw new Error("This book is not available.");
+        if (cancelled) return;
+        setBook(data);
+        setPasswordOpen(true);
+        setLoading(false);
+        return;
+      }
+      const [data] = await Promise.all([metadataPromise, openPdf()]);
+        if (!data) throw new Error("This book is not available.");
+        if (cancelled) return;
+        setBook(data);
+      } catch (cause: any) {
+        if (!cancelled) {
+          setError(cause?.message || "Unable to open this book.");
+          setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [access, id, openPdf, passwordRequired]);
+
+  const visiblePages = mobile ? [page] : [page, page + 1].filter((item) => item <= pageCount);
+
+  const clampPan = useCallback((nextPan: PanOffset, viewport: HTMLElement, contentScale = 1) => {
+    const canvas = viewport.querySelector("canvas");
+    if (!canvas) return nextPan;
+    const baseWidth = canvas.offsetWidth || Number.parseFloat(canvas.style.width) || canvas.clientWidth;
+    const baseHeight = canvas.offsetHeight || Number.parseFloat(canvas.style.height) || canvas.clientHeight;
+    const maxX = Math.max(0, (baseWidth * contentScale - viewport.clientWidth) / 2);
+    const maxY = Math.max(0, (baseHeight * contentScale - viewport.clientHeight) / 2);
+    return {
+      x: Math.max(-maxX, Math.min(maxX, nextPan.x)),
+      y: Math.max(-maxY, Math.min(maxY, nextPan.y)),
+    };
+  }, []);
+
+  const changeZoom = useCallback((direction: "in" | "out") => {
+    setZoom((currentZoom) => {
+      const nextZoom = Math.min(MAX_RENDER_ZOOM, Math.max(1, currentZoom + (direction === "in" ? 0.25 : -0.25)));
+      if (nextZoom !== currentZoom) {
+        setPan((currentPan) => nextZoom === 1
+          ? { x: 0, y: 0 }
+          : {
+              x: currentPan.x * nextZoom / currentZoom,
+              y: currentPan.y * nextZoom / currentZoom,
+            });
+      }
+      return nextZoom;
+    });
+  }, []);
+
+  const pointerDistance = useCallback(() => {
+    const pointers = Array.from(activePointers.current.values());
+    if (pointers.length < 2) return 0;
+    return Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y);
+  }, []);
+
+  const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const currentZoom = zoom;
+    const nextZoom = Math.min(MAX_RENDER_ZOOM, Math.max(1, currentZoom + (event.deltaY < 0 ? 0.1 : -0.1)));
+    if (nextZoom === currentZoom) return;
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const cursorX = event.clientX - bounds.left - bounds.width / 2;
+    const cursorY = event.clientY - bounds.top - bounds.height / 2;
+    const ratio = nextZoom / currentZoom;
+    const nextPan = {
+      x: cursorX - (cursorX - pan.x) * ratio,
+      y: cursorY - (cursorY - pan.y) * ratio,
+    };
+
+    setZoom(nextZoom);
+    setPan(clampPan(nextPan, event.currentTarget, nextZoom));
+  }, [clampPan, pan, zoom]);
+
+  const beginPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "touch") {
+      const now = performance.now();
+      const previousTap = lastTap.current;
+      const isDoubleTap = previousTap &&
+        now - previousTap.time < 320 &&
+        Math.hypot(previousTap.x - event.clientX, previousTap.y - event.clientY) < 30;
+
+      if (isDoubleTap) {
+        event.preventDefault();
+        lastTap.current = null;
+        const nextZoom = zoom > 1 ? 1 : 2;
+        setZoom(nextZoom);
+        setPan({ x: 0, y: 0 });
+        return;
+      }
+      lastTap.current = { time: now, x: event.clientX, y: event.clientY };
+      activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (activePointers.current.size === 2) {
+        pinchStart.current = {
+          distance: pointerDistance(),
+          zoom,
+          pan,
+        };
+        setIsPanning(false);
+        event.currentTarget.setPointerCapture(event.pointerId);
+        return;
+      }
+    }
+
+    if (zoom <= 1) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panStart.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      pointerId: event.pointerId,
+      x: pan.x,
+      y: pan.y,
+    };
+    setIsPanning(true);
+  }, [pan, pointerDistance, zoom]);
+
+  const movePan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "touch") {
+      const current = activePointers.current.get(event.pointerId);
+      if (current) {
+        activePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      }
+      const pinch = pinchStart.current;
+      if (pinch && activePointers.current.size >= 2) {
+        const distance = pointerDistance();
+        if (!distance || !pinch.distance) return;
+        const nextZoom = Math.min(MAX_RENDER_ZOOM, Math.max(1, pinch.zoom * distance / pinch.distance));
+        setZoom(nextZoom);
+        setPan(clampPan(pinch.pan, event.currentTarget, nextZoom));
+        return;
+      }
+    }
+
+    const start = panStart.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    setPan(clampPan({
+      x: start.x + event.clientX - start.clientX,
+      y: start.y + event.clientY - start.clientY,
+    }, event.currentTarget, zoom));
+  }, [clampPan, pointerDistance, zoom]);
+
+  const endPan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "touch") {
+      activePointers.current.delete(event.pointerId);
+      if (activePointers.current.size < 2) pinchStart.current = null;
+      if (activePointers.current.size === 0) {
+        panStart.current = null;
+        setIsPanning(false);
+      }
+    }
+    if (panStart.current?.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    panStart.current = null;
+    setIsPanning(false);
+  }, []);
+
+  useEffect(() => {
+    setPan({ x: 0, y: 0 });
+  }, [page]);
+
+  useEffect(() => {
+    if (zoom <= 1) {
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    const viewport = document.querySelector<HTMLElement>(".heyzin-paper-viewport");
+    if (viewport) {
+      setPan((currentPan) => clampPan(currentPan, viewport, zoom));
+    }
+  }, [clampPan, zoom]);
+
+  const getPdfPage = useCallback(async (pageNumber: number) => {
+    if (!pdf) throw new Error("This book is still loading.");
+
+    const cachedPage = pageCache.current.get(pageNumber);
+    if (cachedPage) return cachedPage;
+
+    const existingRequest = pagePrefetches.current.get(pageNumber);
+    if (existingRequest) return existingRequest;
+
+    const request = pdf.getPage(pageNumber)
+      .then((documentPage) => {
+        pageCache.current.set(pageNumber, documentPage);
+        pagePrefetches.current.delete(pageNumber);
+        return documentPage;
+      })
+      .catch((cause) => {
+        pagePrefetches.current.delete(pageNumber);
+        throw cause;
+      });
+
+    pagePrefetches.current.set(pageNumber, request);
+    return request;
+  }, [pdf]);
+
+  const warmPage = useCallback(async (pageNumber: number) => {
+    const documentPage = await getPdfPage(pageNumber);
+    if (documentPage.getOperatorList) await documentPage.getOperatorList();
+  }, [getPdfPage]);
+
+  useEffect(() => {
+    pageCache.current.clear();
+    pagePrefetches.current.clear();
+  }, [pdf]);
+
+  const renderPage = useCallback(async (pageNumber: number) => {
+    const canvas = pageCanvas.current[pageNumber];
+    if (!pdf || !canvas) return false;
+    const documentPage = await getPdfPage(pageNumber);
+    const base = documentPage.getViewport({ scale: 1 });
+    const roomWidth = Math.max(250, mobile ? window.innerWidth : Math.floor(window.innerWidth / 2));
+    const viewportHeight = window.visualViewport?.height || window.innerHeight;
+    const roomHeight = Math.max(300, viewportHeight - (mobile ? 132 : 154) - STAGE_CLEARANCE);
+    const fitScale = Math.max(0.5, Math.min(3.8, Math.min(roomWidth / base.width, roomHeight / base.height)));
+    const fitViewport = documentPage.getViewport({ scale: fitScale });
+    const desiredRenderScale = fitScale * MAX_RENDER_ZOOM;
+    const maxRenderScale = Math.sqrt(MAX_RENDER_PIXELS / (base.width * base.height));
+    const renderScale = Math.max(fitScale, Math.min(desiredRenderScale, maxRenderScale));
+    const renderViewport = documentPage.getViewport({ scale: renderScale });
+    const deviceRatio = Math.min(window.devicePixelRatio || 1, 2.5);
+    const pixelRatio = Math.max(
+      1,
+      Math.min(deviceRatio, Math.sqrt(MAX_RENDER_PIXELS / (renderViewport.width * renderViewport.height))),
+    );
+    const staged = document.createElement("canvas");
+    staged.width = Math.ceil(renderViewport.width * pixelRatio);
+    staged.height = Math.ceil(renderViewport.height * pixelRatio);
+    await documentPage.render({
+      canvasContext: staged.getContext("2d")!,
+      viewport: renderViewport,
+      transform: [pixelRatio, 0, 0, pixelRatio, 0, 0],
+    }).promise;
+    canvas.width = staged.width;
+    canvas.height = staged.height;
+    canvas.style.width = `${fitViewport.width}px`;
+    canvas.style.height = `${fitViewport.height}px`;
+    canvas.getContext("2d")!.drawImage(staged, 0, 0);
+    return true;
+  }, [getPdfPage, mobile, pdf]);
+
+  useEffect(() => {
+    if (!pdf) return;
+    let cancelled = false;
+    setPageRendering(true);
+    void Promise.all(visiblePages.map((pageNumber) => renderPage(pageNumber)))
+      .then((rendered) => {
+        if (!cancelled && rendered.every(Boolean)) {
+          setPageRendering(false);
+          setLoading(false);
+           const firstCanvas = pageCanvas.current[visiblePages[0]];
+           const firstViewport = firstCanvas?.parentElement;
+           if (firstViewport) {
+             setPan((currentPan) => clampPan(currentPan, firstViewport));
+           }
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setPageRendering(false);
+          setLoading(false);
+          setError(cause?.message || "Unable to render this page.");
+        }
+      });
+    return () => { cancelled = true; };
+  }, [clampPan, pageCount, pdf, renderPage, renderVersion, visiblePages.join(","), warmPage]);
+
+  useEffect(() => {
+    if (!pdf || pageCount === 0) return;
+    let cancelled = false;
+    const lastPageToWarm = Math.min(pageCount, page + 4);
+    const warmAhead = window.setTimeout(async () => {
+      for (let start = Math.max(4, page + 1); start <= lastPageToWarm && !cancelled; start += 4) {
+        const batch = Array.from(
+          { length: Math.min(4, lastPageToWarm - start + 1) },
+          (_, offset) => start + offset,
+        );
+        await Promise.all(batch.map((pageNumber) => warmPage(pageNumber).catch(() => null)));
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(warmAhead);
+    };
+  }, [page, pageCount, pdf, warmPage]);
+
+  useEffect(() => {
+    const resize = () => setRenderVersion((version) => version + 1);
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", resize);
+    window.addEventListener("orientationchange", resize);
+    viewport?.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("orientationchange", resize);
+      viewport?.removeEventListener("resize", resize);
+    };
+  }, []);
+
+  const changePage = useCallback((direction: "next" | "previous") => {
+    const step = mobile ? 1 : 2;
+    setTurnDirection(direction);
+    setTurnKey((value) => value + 1);
+    setPage((value) => direction === "next" ? Math.min(Math.max(1, pageCount - (mobile ? 0 : 1)), value + step) : Math.max(1, value - step));
+  }, [mobile, pageCount]);
+
+  useEffect(() => {
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft") changePage("previous");
+      if (event.key === "ArrowRight") changePage("next");
+    };
+    window.addEventListener("keydown", keyboard);
+    return () => window.removeEventListener("keydown", keyboard);
+  }, [changePage]);
+
+  const submitPassword = async (password: string) => {
+    if (!id) return;
+    setPasswordLoading(true);
+    setPasswordError("");
+    const email = localStorage.getItem("user_email")?.trim().toLowerCase();
+    if (!email) {
+      setPasswordError("Your subscription email is missing. Please go back and verify access again.");
+      setPasswordLoading(false);
+      return;
+    }
+    const result = await verifyFlipbookPassword(id, password, email, deviceId());
+    if (!result.success) {
+      setPasswordError(result.error || "Invalid password.");
+    } else {
+      setPasswordOpen(false);
+      try {
+        setLoading(true);
+        await openPdf();
+      } catch {
+        setError("Unable to open this book.");
+        setLoading(false);
+      }
+    }
+    setPasswordLoading(false);
+  };
+
+  if (!access) {
+    return <><style>{HEYZIN_STYLES}</style><AccessScreen checking={checkingAccess} error={accessError} unavailable={serviceUnavailable} disabled={disabled} onCheck={checkAccess} /></>;
+  }
+
+  if (error) {
+    return (
+      <>
+        <style>{HEYZIN_STYLES}</style>
+        <div className="heyzin-screen heyzin-error-screen">
+          <div className="heyzin-error-card">
+            <FileText className="mx-auto mb-4 h-10 w-10 text-[#ebc66a]" />
+            <span className="heyzin-eyebrow">Reading room</span>
+            <h2>This book could not be opened</h2>
+            <p>{error}</p>
+            <Button onClick={() => window.location.reload()} className="heyzin-access-button">Try again</Button>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  const progress = pageCount ? ((mobile ? page : Math.min(page + 1, pageCount)) / pageCount) * 100 : 0;
+
+  return (
+    <>
+      <style>{HEYZIN_STYLES}</style>
+      <div className="heyzin-viewer" onContextMenu={(event) => event.preventDefault()}>
+        <header className="heyzin-topbar">
+          <button type="button" aria-label="Back to library" onClick={() => window.history.back()} className="heyzin-back-button">
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <div className="heyzin-top-title">
+            <span className="heyzin-mini-mark"><FileText className="h-3.5 w-3.5" /></span>
+            <div className="heyzin-top-title-copy">
+              <div className="heyzin-zoom-controls heyzin-title-zoom" aria-label="Page zoom controls">
+                <button
+                  type="button"
+                  aria-label="Zoom out"
+                  title="Zoom out"
+                  onClick={() => changeZoom("out")}
+                  disabled={zoom <= 1}
+                  className="heyzin-zoom-button"
+                >
+                  <ZoomOut className="h-3.5 w-3.5" />
+                </button>
+                <span aria-live="polite">{Math.round(zoom * 100)}%</span>
+                <button
+                  type="button"
+                  aria-label="Zoom in"
+                  title="Zoom in"
+                  onClick={() => changeZoom("in")}
+                  disabled={zoom >= MAX_RENDER_ZOOM}
+                  className="heyzin-zoom-button"
+                >
+                  <ZoomIn className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <h1>{book?.title || "E-book viewer"}</h1>
+              <span className="heyzin-top-subtitle"><ShieldCheck className="h-3 w-3" /> MED-A protected reading room</span>
+            </div>
+          </div>
+          <div className="heyzin-top-actions">
+            <button type="button" aria-label="Toggle sound" className="heyzin-icon-button"><Volume2 className="h-4 w-4" /></button>
+            <button type="button" aria-label="Fullscreen" onClick={() => document.documentElement.requestFullscreen?.()} className="heyzin-icon-button"><Maximize2 className="h-4 w-4" /></button>
+          </div>
+        </header>
+
+         <main className="heyzin-stage" aria-busy={loading || pageRendering}>
+          <div className="heyzin-stage-glow" />
+           {visiblePages.length > 0 && (
+            <div key={turnKey} className={`heyzin-book-spread ${turnDirection === "next" ? "heyzin-turn-next" : "heyzin-turn-previous"} ${mobile ? "heyzin-single-page" : ""}`}>
+              {visiblePages.map((pageNumber, index) => (
+                <section
+                  key={pageNumber}
+                  className={`heyzin-paper ${mobile ? "heyzin-paper-mobile" : index === 0 ? "heyzin-paper-left" : "heyzin-paper-right"}`}
+                >
+                   <div
+                     className="heyzin-paper-viewport"
+                     onWheel={handleWheel}
+                     onPointerDown={beginPan}
+                     onPointerMove={movePan}
+                     onPointerUp={endPan}
+                     onPointerCancel={endPan}
+                     style={{
+                        cursor: zoom > 1 ? (isPanning ? "grabbing" : "grab") : "default",
+                        touchAction: "none",
+                     }}
+                   >
+                     <canvas
+                       ref={(node) => { pageCanvas.current[pageNumber] = node; }}
+                       aria-label={`Book page ${pageNumber}`}
+                       style={{
+                           transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+                           transition: isPanning ? "none" : undefined,
+                       }}
+                     />
+                   </div>
+                  <span className="heyzin-paper-shadow" />
+                </section>
+              ))}
+              {!mobile && visiblePages.length === 2 && <div className="heyzin-gutter" />}
+            </div>
+          )}
+           {(loading || pageRendering) && (
+             <div className="heyzin-loading-layer" role="status" aria-live="polite">
+               <div className="heyzin-book-loading">
+                 <div className="heyzin-loader-orbit" aria-hidden="true">
+                   <span className="heyzin-loader-core" />
+                 </div>
+                 <div className="heyzin-loading-copy">
+                   <strong>{loading ? "Opening your book" : "Turning the page"}</strong>
+                   <span>{loading ? "Preparing a beautiful reading experience" : "Rendering your next view"}</span>
+                 </div>
+                 <div className="heyzin-loading-dots" aria-hidden="true"><i /><i /><i /></div>
+               </div>
+             </div>
+           )}
+        </main>
+
+        <footer className="heyzin-bottom-bar">
+           <BottomControl direction="previous" disabled={loading || pageRendering || page <= 1} onClick={() => changePage("previous")} />
+          <div className="heyzin-progress-wrap">
+            <div className="heyzin-progress-meta"><span>READING PROGRESS</span><span>{loading ? "Preparing" : "Keep going"}</span></div>
+            <div className="heyzin-progress-track"><span style={{ width: `${progress}%` }} /></div>
+          </div>
+           <BottomControl direction="next" disabled={loading || pageRendering || page >= pageCount || (pageCount > 0 && !mobile && page + 1 >= pageCount)} onClick={() => changePage("next")} />
+        </footer>
+      </div>
+      <PasswordPrompt isOpen={passwordOpen} onSubmit={submitPassword} onCancel={() => window.history.back()} isLoading={passwordLoading} error={passwordError} flipbookTitle={book?.title} />
+    </>
+  );
+}
+
+const HEYZIN_STYLES = `
+  .heyzin-viewer, .heyzin-screen { --heyzin-ink: #101c24; --heyzin-deep: #192a31; --heyzin-gold: #e9be5d; --heyzin-red: #c84937; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  .heyzin-screen { min-height: 100vh; display: grid; place-items: center; overflow: hidden; position: relative; background: #101c24; color: #f7f1e5; padding: 24px; }
+  .heyzin-loader { display: grid; justify-items: center; gap: 12px; color: #f5d992; }
+  .heyzin-loader p, .heyzin-book-loading span { font-size: 13px; letter-spacing: .08em; font-weight: 700; }
+  .heyzin-loader span { color: rgba(247,241,229,.42); font-size: 12px; }
+  .heyzin-loader-mark { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 18px; color: #15272f; background: #ebc66a; box-shadow: 0 18px 44px rgba(0,0,0,.32); }
+  .heyzin-spinner { width: 30px; height: 30px; border: 2px solid rgba(235,198,106,.18); border-top-color: #ebc66a; border-radius: 50%; animation: heyzin-spin .8s linear infinite; }
+  .heyzin-access-screen { background: radial-gradient(circle at 8% 12%, rgba(200,73,55,.22), transparent 28%), radial-gradient(circle at 90% 90%, rgba(233,190,93,.12), transparent 30%), #101c24; }
+  .heyzin-access-glow { position: absolute; width: 380px; height: 380px; border-radius: 50%; filter: blur(70px); opacity: .32; pointer-events: none; }
+  .heyzin-access-glow-one { background: #c84937; top: -200px; left: -160px; }
+  .heyzin-access-glow-two { background: #e9be5d; bottom: -210px; right: -140px; }
+  .heyzin-access-card { position: relative; width: min(980px, 100%); display: grid; grid-template-columns: 1.05fr .95fr; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 28px; background: rgba(255,255,255,.055); box-shadow: 0 30px 100px rgba(0,0,0,.35); backdrop-filter: blur(22px); }
+  .heyzin-access-brand { min-height: 560px; padding: 42px; display: flex; flex-direction: column; justify-content: space-between; background: linear-gradient(145deg, rgba(200,73,55,.95), rgba(107,45,39,.9) 47%, rgba(25,42,49,.96)); }
+  .heyzin-brand-lockup { display: flex; align-items: center; gap: 10px; font-size: 14px; letter-spacing: .02em; }
+  .heyzin-brand-lockup b { color: #f6d98e; }
+  .heyzin-brand-icon, .heyzin-mini-mark { display: grid; place-items: center; color: #192a31; background: #f0cb73; }
+  .heyzin-brand-icon { width: 40px; height: 40px; border-radius: 13px; }
+  .heyzin-access-copy { max-width: 390px; }
+  .heyzin-eyebrow { color: #efcf83; font-size: 10px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; }
+  .heyzin-access-copy h1 { margin: 15px 0 0; max-width: 380px; font-size: clamp(32px, 4vw, 52px); line-height: .98; letter-spacing: -.055em; }
+  .heyzin-access-copy p { max-width: 350px; margin-top: 20px; color: rgba(255,255,255,.68); font-size: 14px; line-height: 1.8; }
+  .heyzin-secure-note { display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,.58); font-size: 11px; }
+  .heyzin-secure-note svg { color: #f0cb73; }
+  .heyzin-access-form { padding: 52px 46px; background: rgba(13,25,31,.54); }
+  .heyzin-form-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 17px; margin-bottom: 25px; color: #f0cb73; background: rgba(240,203,115,.13); }
+  .heyzin-access-form h2 { margin-top: 11px; font-size: 29px; letter-spacing: -.04em; }
+  .heyzin-access-form > p { max-width: 320px; margin-top: 10px; color: rgba(255,255,255,.51); font-size: 13px; line-height: 1.7; }
+  .heyzin-steps { margin-top: 28px; padding: 16px; border: 1px solid rgba(255,255,255,.1); border-radius: 17px; background: rgba(0,0,0,.14); }
+  .heyzin-steps > span { color: rgba(255,255,255,.4); font-size: 9px; font-weight: 800; letter-spacing: .17em; text-transform: uppercase; }
+  .heyzin-steps ol { display: grid; gap: 14px; margin-top: 14px; padding: 0; list-style: none; }
+  .heyzin-steps li { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.67); font-size: 12px; }
+  .heyzin-steps li b { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 21px; border-radius: 50%; color: #f5d992; background: rgba(240,203,115,.15); font-size: 10px; }
+  .heyzin-access-button { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 48px; margin-top: 22px; border-radius: 13px; color: #17282e; background: #f0cb73; font-size: 12px; font-weight: 800; transition: transform .2s ease, background .2s ease; }
+  .heyzin-access-button:hover { color: #17282e; background: #f7dc98; transform: translateY(-2px); }
+  .heyzin-error { margin-top: 15px; color: #ff9b91; font-size: 12px; line-height: 1.5; }
+  .heyzin-warning { margin-top: 15px; color: #f0cb73 !important; font-size: 12px !important; }
+  .heyzin-error-screen { background: radial-gradient(circle at 50% 0%, rgba(200,73,55,.25), transparent 35%), #101c24; }
+  .heyzin-error-card { max-width: 430px; padding: 44px; border: 1px solid rgba(255,255,255,.1); border-radius: 24px; text-align: center; background: rgba(255,255,255,.06); }
+  .heyzin-error-card h2 { margin-top: 12px; font-size: 24px; }
+  .heyzin-error-card p { margin-top: 10px; color: rgba(255,255,255,.52); font-size: 13px; line-height: 1.6; }
+  .heyzin-error-card .heyzin-access-button { margin-top: 24px; }
+  .heyzin-viewer { --heyzin-stage-clearance: 6px; height: 100vh; height: 100dvh; min-height: 0; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; color: #fff; background: #101c24; }
+  .heyzin-topbar { height: 66px; min-height: 66px; display: flex; align-items: center; gap: 13px; padding: 0 24px; border-bottom: 1px solid rgba(255,255,255,.09); background: rgba(16,28,36,.92); box-shadow: 0 8px 28px rgba(0,0,0,.13); z-index: 5; }
+  .heyzin-back-button, .heyzin-icon-button { display: grid; place-items: center; border: 1px solid rgba(255,255,255,.1); color: rgba(255,255,255,.66); background: rgba(255,255,255,.045); transition: .2s ease; }
+  .heyzin-back-button { width: 34px; height: 34px; border-radius: 11px; }
+  .heyzin-back-button:hover, .heyzin-icon-button:hover { color: #f0cb73; border-color: rgba(240,203,115,.4); background: rgba(240,203,115,.1); }
+  .heyzin-top-title { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+  .heyzin-top-title-copy { display: grid; min-width: 0; gap: 1px; }
+  .heyzin-mini-mark { width: 30px; height: 30px; border-radius: 9px; }
+  .heyzin-top-title h1 { max-width: min(60vw, 560px); overflow: hidden; color: #fff9ed; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .heyzin-top-subtitle { display: flex; align-items: center; gap: 4px; color: rgba(255,255,255,.39); font-size: 9px; letter-spacing: .04em; }
+  .heyzin-top-title span svg { color: #e9be5d; }
+  .heyzin-top-actions { display: flex; gap: 8px; }
+  .heyzin-icon-button { width: 32px; height: 32px; border-radius: 10px; }
+  .heyzin-zoom-controls { display: flex; align-items: center; gap: 2px; height: 32px; padding: 2px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; color: rgba(255,255,255,.52); background: rgba(255,255,255,.045); }
+  .heyzin-zoom-controls > span { min-width: 38px; color: rgba(255,255,255,.55); font-size: 9px; font-weight: 800; letter-spacing: .04em; text-align: center; }
+  .heyzin-zoom-button { display: grid; place-items: center; width: 27px; height: 26px; border: 0; border-radius: 7px; color: rgba(255,255,255,.68); background: transparent; transition: color .2s ease, background .2s ease, transform .2s ease; }
+  .heyzin-zoom-button:hover:not(:disabled) { color: #f0cb73; background: rgba(240,203,115,.12); transform: translateY(-1px); }
+  .heyzin-zoom-button:disabled { cursor: default; opacity: .25; }
+  .heyzin-title-zoom { width: max-content; height: 22px; padding: 1px; border-radius: 7px; }
+  .heyzin-title-zoom > span { min-width: 32px; font-size: 8px; }
+  .heyzin-title-zoom .heyzin-zoom-button { width: 22px; height: 18px; border-radius: 5px; }
+  .heyzin-stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: stretch; overflow: hidden; box-sizing: border-box; padding: 0 0 var(--heyzin-stage-clearance); background: radial-gradient(ellipse at 50% -10%, #46636a 0, #263e45 31%, #172b32 62%, #101c24 100%); }
+  .heyzin-stage::before { content: ""; position: absolute; inset: 0; opacity: .13; pointer-events: none; background-image: radial-gradient(rgba(255,255,255,.4) .6px, transparent .6px); background-size: 5px 5px; mix-blend-mode: soft-light; }
+  .heyzin-stage-glow { position: absolute; width: min(60vw, 740px); height: 210px; bottom: 4%; border-radius: 50%; filter: blur(24px); opacity: .45; background: rgba(0,0,0,.52); }
+  .heyzin-loading-layer { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: rgba(16,28,36,.42); backdrop-filter: blur(5px); animation: heyzin-loader-in .34s ease both; }
+  .heyzin-book-loading { position: relative; display: grid; justify-items: center; gap: 14px; min-width: min(280px, calc(100vw - 40px)); padding: 28px 32px; color: #f0cb73; text-align: center; }
+  .heyzin-loader-orbit { position: relative; width: 52px; height: 52px; border: 1px solid rgba(240,203,115,.22); border-radius: 50%; animation: heyzin-orbit 1.8s cubic-bezier(.55,.1,.35,.9) infinite; }
+  .heyzin-loader-orbit::before, .heyzin-loader-orbit::after { content: ""; position: absolute; inset: 5px; border: 2px solid transparent; border-top-color: #f0cb73; border-right-color: rgba(240,203,115,.46); border-radius: inherit; }
+  .heyzin-loader-orbit::after { inset: 11px; border-top-color: #c84937; border-right-color: rgba(200,73,55,.35); animation: heyzin-orbit-reverse 1.15s linear infinite; }
+  .heyzin-loader-core { position: absolute; inset: 21px; border-radius: 50%; background: #f0cb73; box-shadow: 0 0 16px rgba(240,203,115,.8), 0 0 34px rgba(240,203,115,.3); animation: heyzin-core-pulse 1.4s ease-in-out infinite; }
+  .heyzin-loading-copy { display: grid; gap: 5px; }
+  .heyzin-loading-copy strong { color: #fff9ed; font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .heyzin-loading-copy span { color: rgba(255,255,255,.48); font-size: 11px; letter-spacing: .02em; }
+  .heyzin-loading-dots { display: flex; gap: 5px; align-items: center; height: 8px; }
+  .heyzin-loading-dots i { display: block; width: 4px; height: 4px; border-radius: 50%; background: #e9be5d; animation: heyzin-dot 1.15s ease-in-out infinite; }
+  .heyzin-loading-dots i:nth-child(2) { animation-delay: .14s; }
+  .heyzin-loading-dots i:nth-child(3) { animation-delay: .28s; }
+  .heyzin-book-spread { position: relative; z-index: 1; display: flex; align-items: stretch; justify-content: stretch; gap: 0; width: 100%; height: calc(100% - 6px); margin: 6px 0 0; min-width: 0; transform-origin: center; filter: drop-shadow(0 25px 25px rgba(0,0,0,.3)); animation-duration: .56s; animation-timing-function: cubic-bezier(.22,.72,.22,1); animation-fill-mode: both; }
+  .heyzin-turn-next { animation-name: heyzin-page-next; }
+  .heyzin-turn-previous { animation-name: heyzin-page-previous; }
+  .heyzin-paper { position: relative; display: flex; min-width: 0; flex: 1 1 50%; height: 100%; overflow: hidden; border: 1px solid rgba(42,33,23,.18); background: #fffdf7; }
+  .heyzin-paper-left { border-radius: 4px 2px 2px 4px; box-shadow: -15px 22px 25px rgba(0,0,0,.28), inset -9px 0 16px rgba(0,0,0,.05); }
+  .heyzin-paper-right { border-radius: 2px 4px 4px 2px; box-shadow: 15px 22px 25px rgba(0,0,0,.28), inset 9px 0 16px rgba(0,0,0,.05); }
+  .heyzin-paper-mobile { border-radius: 4px; box-shadow: 0 25px 35px rgba(0,0,0,.38); }
+   .heyzin-paper-viewport { position: relative; width: 100%; height: 100%; overflow: hidden; display: grid; place-items: center; overscroll-behavior: contain; }
+  .heyzin-paper canvas { display: block; max-width: none; max-height: none; image-rendering: auto; transform-origin: center center; will-change: transform; transition: transform .18s cubic-bezier(.22,.72,.22,1); }
+  .heyzin-paper-shadow { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.42), inset 0 -20px 24px rgba(53,35,12,.025); }
+  .heyzin-gutter { position: absolute; top: 0; bottom: 0; left: 50%; z-index: 2; width: 18px; transform: translateX(-50%); pointer-events: none; background: linear-gradient(90deg, transparent, rgba(20,13,7,.22), rgba(255,255,255,.2), rgba(20,13,7,.18), transparent); mix-blend-mode: multiply; }
+  .heyzin-bottom-bar { box-sizing: border-box; flex: 0 0 auto; min-height: 88px; display: flex; align-items: center; gap: 18px; padding: 12px 30px 16px; border-top: 1px solid rgba(255,255,255,.1); background: rgba(14,25,32,.96); z-index: 5; }
+  .heyzin-nav-button { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 42px; border: 1px solid rgba(240,203,115,.33); border-radius: 50%; color: #182a31; background: #f0cb73; box-shadow: 0 7px 16px rgba(0,0,0,.22); transition: .2s ease; }
+  .heyzin-nav-button:hover:not(:disabled) { transform: translateY(-2px) scale(1.05); background: #f8dda0; box-shadow: 0 10px 24px rgba(0,0,0,.3); }
+  .heyzin-nav-button:disabled { cursor: default; opacity: .22; }
+  .heyzin-progress-wrap { width: min(740px, 100%); flex: 1; margin: 0 auto; }
+  .heyzin-progress-meta { display: flex; justify-content: space-between; margin-bottom: 9px; color: rgba(255,255,255,.38); font-size: 9px; font-weight: 800; letter-spacing: .16em; }
+  .heyzin-progress-meta span:last-child { color: #edcf85; letter-spacing: .04em; text-transform: none; }
+  .heyzin-progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.13); box-shadow: inset 0 1px 3px rgba(0,0,0,.28); }
+  .heyzin-progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #c84937, #e9be5d); box-shadow: 0 0 14px rgba(233,190,93,.35); transition: width .56s cubic-bezier(.22,.72,.22,1); }
+  @keyframes heyzin-spin { to { transform: rotate(360deg); } }
+  @keyframes heyzin-loader-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes heyzin-orbit { to { transform: rotate(360deg); } }
+  @keyframes heyzin-orbit-reverse { to { transform: rotate(-360deg); } }
+  @keyframes heyzin-core-pulse { 0%, 100% { transform: scale(.75); opacity: .65; } 50% { transform: scale(1.15); opacity: 1; } }
+  @keyframes heyzin-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-4px); opacity: 1; } }
+  @keyframes heyzin-page-next { 0% { opacity: .2; transform: perspective(1600px) rotateY(8deg) scale(.985); } 100% { opacity: 1; transform: perspective(1600px) rotateY(0deg) scale(1); } }
+  @keyframes heyzin-page-previous { 0% { opacity: .2; transform: perspective(1600px) rotateY(-8deg) scale(.985); } 100% { opacity: 1; transform: perspective(1600px) rotateY(0deg) scale(1); } }
+  @media (max-width: 767px) {
+    .heyzin-access-screen { padding: 12px; }
+    .heyzin-access-card { grid-template-columns: 1fr; border-radius: 22px; }
+    .heyzin-access-brand { min-height: 0; padding: 16px 18px 14px; gap: 12px; }
+    .heyzin-brand-lockup { gap: 8px; font-size: 12px; }
+    .heyzin-brand-icon { width: 30px; height: 30px; border-radius: 10px; }
+    .heyzin-access-copy { margin-top: 0; }
+    .heyzin-access-copy h1 { margin-top: 8px; font-size: 22px; line-height: 1.02; }
+    .heyzin-access-copy p { display: none; }
+    .heyzin-secure-note { gap: 5px; font-size: 9px; }
+    .heyzin-access-form { padding: 16px 18px 18px; }
+    .heyzin-form-icon { width: 36px; height: 36px; margin-bottom: 10px; border-radius: 11px; }
+    .heyzin-access-form h2 { margin-top: 7px; font-size: 21px; }
+    .heyzin-access-form > p { margin-top: 7px; font-size: 11px; line-height: 1.4; }
+    .heyzin-steps { margin-top: 14px; padding: 10px; border-radius: 12px; }
+    .heyzin-steps > span { font-size: 8px; }
+    .heyzin-steps ol { gap: 7px; margin-top: 9px; }
+    .heyzin-steps li { gap: 7px; font-size: 10px; line-height: 1.2; }
+    .heyzin-steps li b { width: 18px; height: 18px; flex-basis: 18px; font-size: 9px; }
+    .heyzin-access-button { height: 40px; margin-top: 13px; border-radius: 11px; font-size: 11px; }
+    .heyzin-error, .heyzin-warning { margin-top: 9px; font-size: 10px !important; }
+    .heyzin-topbar { height: 58px; min-height: 58px; padding: 0 13px; }
+    .heyzin-top-title h1 { max-width: 58vw; font-size: 11px; }
+    .heyzin-top-subtitle { display: none; }
+    .heyzin-top-actions .heyzin-icon-button:first-child { display: none; }
+    .heyzin-title-zoom { height: 20px; }
+    .heyzin-title-zoom > span { min-width: 29px; font-size: 8px; }
+    .heyzin-title-zoom .heyzin-zoom-button { width: 21px; height: 17px; }
+    .heyzin-stage { padding: 0 0 var(--heyzin-stage-clearance); }
+    .heyzin-bottom-bar { min-height: 68px; gap: 10px; padding: 8px 14px; }
+    .heyzin-nav-button { width: 39px; height: 39px; flex-basis: 39px; }
+    .heyzin-progress-meta { margin-bottom: 7px; font-size: 8px; }
+  }
+`;

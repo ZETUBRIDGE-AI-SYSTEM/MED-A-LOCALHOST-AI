@@ -1,0 +1,356 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: study
+    description: MED-A study question generation
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /study/questions:
+    post:
+      operationId: generateStudyQuestions
+      tags: [study]
+      summary: Generate a focused study set
+      description: Creates practice questions for a student profile and topic.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudyQuestionsInput"
+      responses:
+        "200":
+          description: Generated questions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyQuestionsResult"
+        "400":
+          description: Invalid study request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Question generation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /study/questions/stream:
+    post:
+      operationId: streamStudyQuestions
+      tags: [study]
+      summary: Stream a focused study set
+      description: Verifies study access and sends each question as soon as it is ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudyQuestionsInput"
+      responses:
+        "200":
+          description: Server-sent question events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: Invalid study request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "402":
+          description: Active subscription required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Subscriber account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Subscription service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /study/answer/stream:
+    post:
+      operationId: streamStudyAnswer
+      tags: [study]
+      summary: Stream an answer when requested
+      description: Verifies study access and streams a model answer or multiple-choice explanation on demand.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudyAnswerInput"
+      responses:
+        "200":
+          description: Server-sent answer text events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: Invalid answer request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "402":
+          description: Active subscription required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Subscriber account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Subscription service or local model unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /study/access:
+    post:
+      operationId: checkStudyAccess
+      tags: [study]
+      summary: Verify study access
+      description: Checks the saved subscriber identity and device before generating questions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudyAccessInput"
+      responses:
+        "200":
+          description: Active subscription confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyAccessResult"
+        "400":
+          description: Missing saved subscriber identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "402":
+          description: Active subscription required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Subscriber account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Subscription service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    StudyQuestionsInput:
+      type: object
+      properties:
+        department:
+          type: string
+          minLength: 1
+        course:
+          type: string
+          minLength: 1
+        level:
+          type: string
+          enum: [Certificate, Upgrading, Diploma, Higher Diploma]
+        module:
+          type: string
+          minLength: 1
+        topic:
+          type: string
+          minLength: 1
+        questionType:
+          type: string
+          enum: [mcq, short, long]
+        count:
+          type: integer
+          minimum: 1
+          maximum: 20
+        email:
+          type: string
+          minLength: 3
+        deviceId:
+          type: string
+          minLength: 1
+      required:
+        - department
+        - course
+        - level
+        - module
+        - topic
+        - questionType
+        - count
+        - email
+        - deviceId
+    StudyQuestion:
+      type: object
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+        answer:
+          type: string
+        answerPoints:
+          type: array
+          items:
+            type: string
+        explanation:
+          type: string
+        answerLabel:
+          type: string
+      required:
+        - id
+        - prompt
+        - options
+        - answer
+        - answerPoints
+        - explanation
+        - answerLabel
+    StudyQuestionsResult:
+      type: object
+      properties:
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyQuestion"
+        topic:
+          type: string
+        generatedAt:
+          type: string
+      required:
+        - questions
+        - topic
+        - generatedAt
+    StudyAccessInput:
+      type: object
+      properties:
+        email:
+          type: string
+          minLength: 3
+        deviceId:
+          type: string
+          minLength: 1
+      required:
+        - email
+        - deviceId
+    StudyAnswerInput:
+      type: object
+      properties:
+        department:
+          type: string
+          minLength: 1
+        course:
+          type: string
+          minLength: 1
+        level:
+          type: string
+          enum: [Certificate, Upgrading, Diploma, Higher Diploma]
+        module:
+          type: string
+          minLength: 1
+        topic:
+          type: string
+          minLength: 1
+        questionType:
+          type: string
+          enum: [mcq, short, long]
+        question:
+          type: string
+          minLength: 1
+          maxLength: 5000
+        options:
+          type: array
+          items:
+            type: string
+        correctAnswer:
+          type: string
+        email:
+          type: string
+          minLength: 3
+        deviceId:
+          type: string
+          minLength: 1
+      required:
+        - department
+        - course
+        - level
+        - module
+        - topic
+        - questionType
+        - question
+        - email
+        - deviceId
+    StudyAccessResult:
+      type: object
+      properties:
+        access:
+          type: boolean
+      required:
+        - access
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+

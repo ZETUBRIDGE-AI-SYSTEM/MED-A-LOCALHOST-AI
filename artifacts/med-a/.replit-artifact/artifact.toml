@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "MED-A"
+description = "A beautiful no-signup study companion for students to find focused practice questions by department, course, level, module, topic, and question type."
+version = "1.0.0"
+id = "artifacts/med-a"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23270
+
+[services.development]
+run = "pnpm --filter @workspace/med-a run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/med-a", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/med-a/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23270"
+BASE_PATH = "/"

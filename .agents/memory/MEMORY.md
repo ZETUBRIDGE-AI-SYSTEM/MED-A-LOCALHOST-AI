@@ -1,0 +1,3 @@
+- [Subscription verification boundary](subscription-verification-boundary.md) — local inference must preserve the online subscription check unless the access policy changes.
+- [Study answers on demand](study-answers-on-demand.md) — prepare MCQ keys with questions, but generate explanations and written model answers only after a click.
+- [Local Ollama deployment](local-ollama-deployment.md) — MED-A currently targets one local laptop; real 500-user low-latency service needs hosted GPU workers.

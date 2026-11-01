@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Checking access....ZetuBridge Premium</title>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700&display=swap" rel="stylesheet"/>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Nunito', sans-serif;
+      background-color: #111;
+      background-image: 
+        linear-gradient(45deg, #1c1c1c 25%, transparent 25%),
+        linear-gradient(-45deg, #1c1c1c 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #1c1c1c 75%),
+        linear-gradient(-45deg, transparent 75%, #1c1c1c 75%);
+      background-size: 30px 30px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+      color: white;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      background: rgba(0, 0, 0, 0.9);
+      border-radius: 24px;
+      padding: 20px;
+      max-width: 340px;
+      width: 100%;
+      box-shadow: 0 0 15px rgba(255, 102, 0, 0.2);
+      animation: fadeIn 0.8s ease-in-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    h1 {
+      text-align: center;
+      font-size: 24px;
+      color: #ff4500;
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      margin-top: 12px;
+      font-weight: 700;
+      color: #ffb380;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      background-color: #1a1a1a;
+      color: #fff;
+      border: 1px solid #444;
+      transition: border-color 0.3s ease;
+    }
+    input:focus, select:focus {
+      outline: 2px solid #ff4500;
+      background-color: #2c2c2c;
+      border-color: #ff4500;
+    }
+    input[readonly] {
+      background-color: #222;
+      color: #bbb;
+      cursor: not-allowed;
+    }
+    input.error { border-color: #ff3300 !important; }
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 16px;
+      background: linear-gradient(to right, #ff4500, #ff8c00, #ffcc00);
+      background-size: 300% 100%;
+      color: white;
+      font-weight: bold;
+      font-size: 16px;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      transition: background-position 0.4s ease;
+    }
+    button:hover:enabled { background-position: right center; }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+      background-position: 0 0;
+    }
+    #status {
+      margin-top: 12px;
+      text-align: center;
+      color: #ccc;
+      font-size: 14px;
+      min-height: 20px;
+    }
+    .powered {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 16px;
+      font-weight: bold;
+      background: linear-gradient(45deg, orange, red, gold, orangered);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    /* Loader overlay styles */
+    #loaderOverlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.9);
+      color: white;
+      font-family: 'Nunito', sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 9999;
+      font-size: 18px;
+      user-select: none;
+    }
+    /* Simple spinner */
+    .spinner {
+      border: 5px solid #444;
+      border-top: 5px solid #ff4500;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 20px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg);}
+      100% { transform: rotate(360deg);}
+    }
+    /* Retry button styles */
+    #retryButton {
+      background: linear-gradient(to right, #ff4500, #ff8c00, #ffcc00);
+      border: none;
+      padding: 12px 24px;
+      border-radius: 14px;
+      font-weight: bold;
+      font-size: 16px;
+      color: white;
+      cursor: pointer;
+      display: none;
+      margin-top: 10px;
+      transition: background-position 0.4s ease;
+    }
+    #retryButton:hover {
+      background-position: right center;
+    }
+    /* Disabled user message styles */
+    #disabledMessage {
+      display: none;
+      background: rgba(20, 0, 0, 0.97);
+      border-radius: 24px;
+      padding: 28px 20px 24px 20px;
+      max-width: 370px;
+      width: 100%;
+      box-shadow: 0 0 18px 2px rgba(255, 70, 0, 0.25);
+      text-align: center;
+      margin: 0 auto;
+      animation: fadeIn 0.8s ease-in-out;
+    }
+    #disabledMessage h2 {
+      color: #ff3300;
+      font-size: 22px;
+      margin-bottom: 12px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    #disabledMessage p {
+      color: #ffb380;
+      font-size: 16px;
+      margin-bottom: 0;
+      margin-top: 6px;
+      line-height: 1.6;
+    }
+    #disabledMessage .support-link {
+      color: #ffcc00;
+      font-weight: bold;
+      display: inline-block;
+      margin-top: 10px;
+      font-size: 16px;
+      text-decoration: none;
+      cursor: default;
+      pointer-events: none;
+    }
+    #disabledMessage .icon {
+      font-size: 44px;
+      margin-bottom: 10px;
+      display: block;
+      color: #ff4500;
+      animation: shake 0.7s;
+    }
+    @keyframes shake {
+      0% { transform: translateX(0);}
+      20% { transform: translateX(-6px);}
+      40% { transform: translateX(6px);}
+      60% { transform: translateX(-4px);}
+      80% { transform: translateX(4px);}
+      100% { transform: translateX(0);}
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Loader overlay -->
+  <div id="loaderOverlay" aria-live="polite" aria-busy="true" role="alert">
+    <div class="spinner"></div>
+    <button id="retryButton" onclick="retryConnection()">Retry Connection</button>
+  </div>
+
+  <!-- Disabled message -->
+  <div id="disabledMessage" role="alertdialog" aria-modal="true" aria-labelledby="disabledTitle" aria-describedby="disabledDesc">
+    <span class="icon">🚫</span>
+    <h2 id="disabledTitle">Account Disabled</h2>
+    <p id="disabledDesc">
+      Your account has been <b>Disabled</b> due to violation of terms and services.<br>
+      If you believe this is a mistake, kindly <span class="support-link">contact support</span>.
+    </p>
+  </div>
+
+  <!-- Payment form container (hidden initially) -->
+  <div class="container" role="main" aria-label="ZetuBank Premium Payment Form" style="display:none;">
+    <h1>🎉 MED-A Premium 🎉</h1>
+
+    <label for="email">Your Email✉️</label>
+    <input type="email" id="email" placeholder="Enter your email" autocomplete="off" aria-label="Email address" />
+
+    <label for="device_id">Account ID🪪</label>
+    <input type="password" id="device_id" placeholder="Auto-filled" readonly autocomplete="off" aria-label="Device ID" />
+
+    <label for="planSelect">Choose a Plan</label>
+    <select id="planSelect" aria-label="Select plan">
+      <option value="">Loading plans...</option>
+    </select>
+
+    <button id="payBtn" onclick="initiatePayment()" aria-label="Continue to payment">Continue to Payment</button>
+    <button id="checkBtn" onclick="checkAccess()" aria-label="Check my access">Check Payment Status</button>
+
+    <div id="status" role="alert" aria-live="polite"></div>
+    <div class="powered">Powered by <span>ZetuBridge❤️💱</span></div>
+  </div>
+
+  <script>
+    // Legacy subscription decrypt function
+    function decryptData(encryptedData) {
+      try {
+        return JSON.parse(decodeURIComponent(escape(atob(encryptedData))));
+      } catch {
+        return null;
+      }
+    }
+
+    // Check old localStorage subscription validity
+    function checkOldSubscription() {
+      const encryptedSubscription = localStorage.getItem("subscription");
+      if (!encryptedSubscription) return false;
+
+      const subscription = decryptData(encryptedSubscription);
+      if (!subscription || !subscription.expiry) return false;
+
+      return new Date().getTime() <= subscription.expiry;
+    }
+
+    let plans = {};
+
+    const emailInput = document.getElementById("email");
+    const deviceInput = document.getElementById("device_id");
+    const planSelect = document.getElementById("planSelect");
+    const payBtn = document.getElementById("payBtn");
+    const checkBtn = document.getElementById("checkBtn");
+    const status = document.getElementById("status");
+    const loaderOverlay = document.getElementById("loaderOverlay");
+    const retryButton = document.getElementById("retryButton");
+    const container = document.querySelector(".container");
+    const disabledMessage = document.getElementById("disabledMessage");
+
+    function setLoadingState(isLoading) {
+      payBtn.disabled = isLoading;
+      checkBtn.disabled = isLoading;
+    }
+
+    function validateEmail(email) {
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    }
+
+    function loadDeviceID() {
+      const saved = localStorage.getItem("device_id");
+      if (saved) {
+        deviceInput.value = "••••••••";
+        deviceInput.setAttribute("data-true-id", saved);
+        deviceInput.setAttribute("readonly", true);
+        deviceInput.style.pointerEvents = "none";
+        deviceInput.classList.remove("error");
+      } else {
+        deviceInput.value = "Device ID not found";
+        deviceInput.classList.add("error");
+        status.textContent = "❌ ID not found. Please contact support.";
+      }
+    }
+
+    function loadEmailFromStorage() {
+      const storedEmail = localStorage.getItem("user_email");
+      if (storedEmail) {
+        emailInput.value = storedEmail;
+        emailInput.setAttribute("readonly", true);
+        emailInput.style.pointerEvents = "none";
+      }
+    }
+
+    function saveEmailToStorage(email) {
+      localStorage.setItem("user_email", email);
+    }
+
+    async function loadPlans() {
+      try {
+        const res = await fetch("https://api.zetubridge.co.ke/plans");
+        if (!res.ok) throw new Error("Failed to fetch plans");
+        const data = await res.json();
+        plans = data;
+
+        planSelect.innerHTML = '<option value="">Select a plan</option>';
+        for (let key in plans) {
+          const option = document.createElement("option");
+          option.value = key;
+          option.textContent = `${key} — Ksh ${plans[key].price}`;
+          planSelect.appendChild(option);
+        }
+        planSelect.disabled = false;
+      } catch (err) {
+        planSelect.innerHTML = '<option disabled>❌ Failed to load plans</option>';
+        planSelect.disabled = true;
+        status.textContent = "❌ 🛜Could not load plans. Please try again later.";
+        console.error("❌ Failed to load plans:", err);
+      }
+    }
+
+    function checkInternetConnection(timeout = 5000) {
+      return new Promise((resolve) => {
+        if (!navigator.onLine) {
+          console.log("Navigator offline");
+          resolve(false);
+          return;
+        }
+
+        const controller = new AbortController();
+        const signal = controller.signal;
+
+        const timer = setTimeout(() => {
+          controller.abort();
+          console.log("Network check timeout");
+          resolve(false);
+        }, timeout);
+
+        fetch("https://www.cloudflare.com/cdn-cgi/trace", { mode: "no-cors", signal })
+          .then(() => {
+            clearTimeout(timer);
+            console.log("Network check success");
+            resolve(true);
+          })
+          .catch(() => {
+            clearTimeout(timer);
+            console.log("Network check failed");
+            resolve(false);
+          });
+      });
+    }
+
+    async function retryConnection() {
+      retryButton.style.display = "none";
+      loaderOverlay.style.pointerEvents = "auto";
+      await checkSubscriptionWithNetworkCheck();
+    }
+
+    // --- MAIN ACCESS CHECK WITH DISABLED USER HANDLING ---
+    async function checkSubscriptionWithNetworkCheck() {
+      loaderOverlay.style.pointerEvents = "none";
+
+      // Check legacy subscription first
+      if (checkOldSubscription()) {
+        console.log("Legacy subscription valid, redirecting...");
+        window.location.href = "go:Book12"; // Redirect for old subscribers
+        return;
+      }
+
+      const isConnected = await checkInternetConnection();
+
+      if (!isConnected) {
+        console.warn("No internet connection detected.");
+        retryButton.style.display = "block";
+        return;
+      }
+
+      const email = localStorage.getItem("user_email");
+      const device_id = localStorage.getItem("device_id");
+
+      if (!email || !device_id) {
+        console.log("No stored credentials, showing payment form.");
+        loaderOverlay.style.display = "none";
+        container.style.display = "block";
+        return;
+      }
+
+      try {
+        const res = await fetch(`https://api.zetubridge.co.ke/verify-access?email=${encodeURIComponent(email)}&device_id=${encodeURIComponent(device_id)}`);
+        if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+        const result = await res.json();
+
+        if (result.disabled === true) {
+          // User is disabled, show message
+          loaderOverlay.style.display = "none";
+          container.style.display = "none";
+          disabledMessage.style.display = "block";
+          return;
+        }
+
+        if (result.access === true) {
+          console.log("New subscription valid, redirecting...");
+          window.location.href = "go:Book12"; // Redirect new subscribers
+        } else {
+          console.log("No active subscription, showing form.");
+          loaderOverlay.style.display = "none";
+          container.style.display = "block";
+        }
+      } catch (err) {
+        console.error("Subscription check error:", err);
+        retryButton.style.display = "block";
+      }
+    }
+
+    async function initiatePayment() {
+      const email = emailInput.value.trim();
+      const storedDeviceID = deviceInput.getAttribute("data-true-id");
+      const plan_id = planSelect.value;
+
+      emailInput.classList.remove("error");
+
+      if (!email || !storedDeviceID || !plan_id) {
+        status.textContent = "❌ Please fill in all fields and choose a plan.";
+        if (!email) emailInput.classList.add("error");
+        return;
+      }
+      if (!validateEmail(email)) {
+        status.textContent = "❌ Please enter a valid email address.";
+        emailInput.classList.add("error");
+        return;
+      }
+
+      saveEmailToStorage(email);
+      setLoadingState(true);
+      status.textContent = "⏳ Checking for existing subscription...";
+
+      try {
+        const accessRes = await fetch("https://api.zetubridge.co.ke/verify-access?email=" 
+          + encodeURIComponent(email) 
+          + "&device_id=" + encodeURIComponent(storedDeviceID)
+        );
+        const accessResult = await accessRes.json();
+
+        if (accessResult.disabled === true) {
+          // User is disabled, show message
+          container.style.display = "none";
+          disabledMessage.style.display = "block";
+          setLoadingState(false);
+          return;
+        }
+
+        if (accessRes.ok && accessResult.access === true) {
+          const expiry = new Date(accessResult.expiresAt).toLocaleString();
+          status.textContent = `✅ You already have an active subscription (Plan: ${accessResult.plan_id}, expires: ${expiry})`;
+          setLoadingState(false);
+          return;
+        }
+
+        status.textContent = "⏳ Processing payment...";
+        const res = await fetch("https://api.zetubridge.co.ke/initiate-payment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, device_id: storedDeviceID, plan_id })
+        });
+        const result = await res.json();
+
+        if (res.ok && result.payment_url) {
+          status.textContent = "✅ Redirecting...";
+          window.location.href = result.payment_url;
+        } else {
+          status.textContent = "❌ " + (result.error || "Unable to initiate payment.");
+          setLoadingState(false);
+        }
+      } catch (err) {
+        console.error(err);
+        status.textContent = "❌ please check your internet 🛜.";
+        setLoadingState(false);
+      }
+    }
+
+    async function checkAccess() {
+      const email = emailInput.value.trim();
+      const storedDeviceID = deviceInput.getAttribute("data-true-id");
+
+      emailInput.classList.remove("error");
+      deviceInput.classList.remove("error");
+
+      if (!email || !storedDeviceID) {
+        status.textContent = "❌ Missing email or Account ID.";
+        if (!email) emailInput.classList.add("error");
+        if (!storedDeviceID) deviceInput.classList.add("error");
+        return;
+      }
+      if (!validateEmail(email)) {
+        status.textContent = "❌ Please enter a valid email address.";
+        emailInput.classList.add("error");
+        return;
+      }
+
+      // Always save email to localStorage on check
+      saveEmailToStorage(email);
+
+      setLoadingState(true);
+      status.textContent = "⏳ Checking access...";
+
+      try {
+        const res = await fetch("https://api.zetubridge.co.ke/verify-access?email=" 
+          + encodeURIComponent(email) 
+          + "&device_id=" + encodeURIComponent(storedDeviceID)
+        );
+        const result = await res.json();
+
+        if (result.disabled === true) {
+          // User is disabled, show message
+          container.style.display = "none";
+          disabledMessage.style.display = "block";
+          setLoadingState(false);
+          return;
+        }
+
+        if (res.ok && result.access === true) {
+          const expiry = new Date(result.expiresAt).toLocaleString();
+          status.textContent = `✅ Access granted. Plan: ${result.plan_id}, expires: ${expiry}`;
+        } else {
+          status.textContent = result.error || "❌No Active subscription or expired.";
+        }
+      } catch (err) {
+        console.error(err);
+        status.textContent = "❌ please check your internet 🛜.";
+      } finally {
+        setLoadingState(false);
+      }
+    }
+
+    // Initialize page
+    loadDeviceID();
+    loadEmailFromStorage();
+    loadPlans();
+    checkSubscriptionWithNetworkCheck();
+  </script>
+
+
+
+
+<!--Add the following script at the bottom of the web page (before </body></html>)-->
+<script type="text/javascript">function add_chatapi(){var hccid=81982190;var nt=document.createElement("script");nt.async=true;nt.src="https://mylivechat.com/chatapi.aspx?hccid="+hccid;var ct=document.getElementsByTagName("script")[0];ct.parentNode.insertBefore(nt,ct);}
+add_chatapi();</script>
+
+
+
+
+<style>
+  * {
+    -webkit-tap-highlight-color: transparent; /* Removes tap highlight effect on touch */
+    -webkit-user-select: none; /* Prevents text/image selection */
+    user-select: none;
+  }
+
+  a, button, img {
+    outline: none; /* Removes any focus outline */
+  }
+</style>
+
+
+
+</body>
+</html>
